@@ -1,0 +1,176 @@
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <ESP32Servo.h>
+#include "DHT.h"
+
+// OLED settings
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+// Pins
+#define SOIL_PIN 34
+#define RELAY_PIN 26
+#define SERVO_PIN 27
+#define BUZZER_PIN 25
+#define DHTPIN 4
+#define DHTTYPE DHT22
+
+DHT dht(DHTPIN, DHTTYPE);
+Servo nozzleServo;
+
+// Your tested soil values:
+// Wet around 1095
+// Dry around 2200
+// Air around 2540
+#define DRY_LIMIT 1800
+
+// Timing
+#define WATER_TIME 3000
+#define WAIT_TIME 10000
+
+// Your relay worked with this logic
+#define PUMP_ON HIGH
+#define PUMP_OFF LOW
+
+void beepOnce() {
+  digitalWrite(BUZZER_PIN, HIGH);
+  delay(250);
+  digitalWrite(BUZZER_PIN, LOW);
+}
+
+void smoothMove(int startAngle, int endAngle, int speedDelay) {
+  if (startAngle < endAngle) {
+    for (int angle = startAngle; angle <= endAngle; angle++) {
+      nozzleServo.write(angle);
+      delay(speedDelay);
+    }
+  } else {
+    for (int angle = startAngle; angle >= endAngle; angle--) {
+      nozzleServo.write(angle);
+      delay(speedDelay);
+    }
+  }
+}
+
+void showStatus(int soilValue, String soilStatus, String pumpStatus, float temp, float hum) {
+  display.clearDisplay();
+
+  display.setCursor(0, 0);
+  display.println("Smart Plant Robot");
+
+  display.setCursor(0, 12);
+  display.print("Soil: ");
+  display.print(soilValue);
+  display.print(" ");
+  display.println(soilStatus);
+
+  display.setCursor(0, 25);
+  display.print("Pump: ");
+  display.println(pumpStatus);
+
+  display.setCursor(0, 38);
+  if (isnan(temp) || isnan(hum)) {
+    display.println("DHT: Error");
+  } else {
+    display.print("T:");
+    display.print(temp, 1);
+    display.print("C H:");
+    display.print(hum, 0);
+    display.println("%");
+  }
+
+  display.setCursor(0, 52);
+  if (soilStatus == "DRY") {
+    display.println("Plant needs water");
+  } else {
+    display.println("Plant is OK");
+  }
+
+  display.display();
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(RELAY_PIN, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+
+  digitalWrite(RELAY_PIN, PUMP_OFF);
+  digitalWrite(BUZZER_PIN, LOW);
+
+  nozzleServo.setPeriodHertz(50);
+  nozzleServo.attach(SERVO_PIN, 500, 2400);
+  nozzleServo.write(90);
+
+  dht.begin();
+
+  Wire.begin(21, 22);
+
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println("OLED not found");
+    while (true);
+  }
+
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+
+  display.setCursor(0, 18);
+  display.println("Smart Plant Robot");
+  display.println("System Starting...");
+  display.display();
+
+  delay(2000);
+
+  beepOnce();
+}
+
+void loop() {
+  int soilValue = analogRead(SOIL_PIN);
+  float humidity = dht.readHumidity();
+  float temperature = dht.readTemperature();
+
+  Serial.print("Soil: ");
+  Serial.print(soilValue);
+  Serial.print(" | Temp: ");
+  Serial.print(temperature);
+  Serial.print(" C | Humidity: ");
+  Serial.print(humidity);
+  Serial.print(" % | ");
+
+  if (soilValue > DRY_LIMIT) {
+    Serial.println("DRY - Watering");
+
+    showStatus(soilValue, "DRY", "ON", temperature, humidity);
+
+    beepOnce();
+
+    smoothMove(90, 70, 12);
+
+    digitalWrite(RELAY_PIN, PUMP_ON);
+
+    smoothMove(70, 110, 12);
+    smoothMove(110, 70, 12);
+    smoothMove(70, 90, 12);
+
+    delay(WATER_TIME);
+
+    digitalWrite(RELAY_PIN, PUMP_OFF);
+
+    showStatus(soilValue, "DRY", "OFF", temperature, humidity);
+
+    delay(WAIT_TIME);
+  } else {
+    Serial.println("OK/WET - Pump OFF");
+
+    digitalWrite(RELAY_PIN, PUMP_OFF);
+    nozzleServo.write(90);
+
+    showStatus(soilValue, "OK", "OFF", temperature, humidity);
+
+    delay(2000);
+  }
+}
